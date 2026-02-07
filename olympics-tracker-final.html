@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Winter Olympics Draft Tracker 2026</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;600;700&display=swap">
+</head>
+<body style="margin:0;padding:0;font-family:'Outfit',sans-serif">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const storage = {
+      async get(key) {
+        try {
+          const value = localStorage.getItem(key);
+          return value ? { key, value } : null;
+        } catch { return null; }
+      },
+      async set(key, value) {
+        try {
+          localStorage.setItem(key, value);
+          return { key, value };
+        } catch { return null; }
+      }
+    };
+
+    function App() {
+      const [participants, setParticipants] = useState([]);
+      const [medals, setMedals] = useState({});
+      const [lastUpdate, setLastUpdate] = useState(null);
+      const [isLoading, setIsLoading] = useState(true);
+      const [isFetching, setIsFetching] = useState(false);
+      const [fetchError, setFetchError] = useState(null);
+
+      const initialDraft = {
+        'Hilton': ['Norway', 'South Korea', 'Japan', 'AIN'],
+        'Chad': ['U. S. A.', 'France', 'Finland', 'Ukraine'],
+        'Lamar': ['Germany', 'Austria', 'Slovenia', 'Belgium'],
+        'Rick': ['China', 'Sweden', 'Great Britain', 'Spain'],
+        'Joe': ['Italy', 'Netherlands', 'New Zealand', 'Australia'],
+        'Mike': ['Canada', 'Switzerland', 'Czech Republic', 'Poland']
+      };
+
+      const countryMapping = {
+        'United States': 'U. S. A.', 'USA': 'U. S. A.', 'Korea': 'South Korea',
+        'Britain': 'Great Britain', 'UK': 'Great Britain', 'ROC': 'AIN',
+        'Individual Neutral Athletes': 'AIN'
+      };
+
+      useEffect(() => {
+        const loadData = async () => {
+          const data = await storage.get('olympics-participants');
+          if (data?.value) {
+            setParticipants(JSON.parse(data.value));
+          } else {
+            const initial = Object.entries(initialDraft).map(([name, countries], i) => ({
+              id: Date.now() + i, name, countries
+            }));
+            setParticipants(initial);
+          }
+          setIsLoading(false);
+        };
+        loadData();
+      }, []);
+
+      useEffect(() => {
+        if (!isLoading && participants.length > 0) {
+          storage.set('olympics-participants', JSON.stringify(participants));
+        }
+      }, [participants, isLoading]);
+
+      const fetchMedalData = async () => {
+        setIsFetching(true);
+        setFetchError(null);
+        
+        try {
+          const response = await fetch(
+            'https://en.wikipedia.org/w/api.php?action=parse&page=2026_Winter_Olympics_medal_table&prop=text&format=json&origin=*'
+          );
+          
+          const data = await response.json();
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(data.parse.text['*'], 'text/html');
+          
+          const tables = doc.querySelectorAll('table.wikitable');
+          let medalTable = null;
+          
+          for (const table of tables) {
+            if (table.textContent.toLowerCase().includes('gold') && 
+                table.textContent.toLowerCase().includes('silver')) {
+              medalTable = table;
+              break;
+            }
+          }
+
+          if (!medalTable) throw new Error('Table not found');
+
+          const newMedals = {};
+          const rows = medalTable.querySelectorAll('tr');
+          
+          // Skip header row (row 0)
+          for (let i = 1; i < rows.length; i++) {
+            const cells = rows[i].querySelectorAll('td, th');
+            const rowText = rows[i].textContent;
+            
+            // Skip if row doesn't have enough cells or is empty
+            if (cells.length < 4) continue;
+            
+            // Try to find country name - usually in cell 0 or 1
+            let country = null;
+            let countryIndex = -1;
+            
+            // Check cells 0 and 1 for country name (non-numeric text)
+            for (let j = 0; j <= 1 && j < cells.length; j++) {
+              const text = cells[j].textContent
+                .replace(/\[.*?\]/g, '')
+                .replace(/\(.*?\)/g, '')
+                .replace(/\*/g, '')
+                .trim();
+              
+              // If it's not just a number and has length, it might be a country
+              if (text && isNaN(parseInt(text))) {
+                country = text;
+                countryIndex = j;
+                break;
+              }
+            }
+            
+            if (!country || country === 'Total' || country.length === 0) continue;
+            
+            // Apply country mapping
+            country = countryMapping[country] || country;
+            
+            // Now find the medal counts - they should be the next 3 numeric values after the country
+            const numbers = [];
+            for (let j = countryIndex + 1; j < cells.length && numbers.length < 3; j++) {
+              const val = parseInt(cells[j].textContent.trim());
+              if (!isNaN(val)) {
+                numbers.push(val);
+              }
+            }
+            
+            // We need at least 3 numbers (gold, silver, bronze)
+            if (numbers.length >= 3) {
+              const [gold, silver, bronze] = numbers;
+              newMedals[country] = { gold, silver, bronze };
+            }
+          }
+
+          if (Object.keys(newMedals).length > 0) {
+            setMedals(newMedals);
+            await storage.set('olympics-medals', JSON.stringify(newMedals));
+            setLastUpdate(new Date());
+          } else {
+            setLastUpdate(new Date());
+          }
+          
+        } catch (error) {
+          console.error('Fetch error:', error);
+          setFetchError('Unable to fetch live data');
+          const cached = await storage.get('olympics-medals');
+          if (cached?.value) setMedals(JSON.parse(cached.value));
+        } finally {
+          setIsFetching(false);
+        }
+      };
+
+      useEffect(() => {
+        if (!isLoading) {
+          fetchMedalData();
+          const interval = setInterval(fetchMedalData, 5 * 60 * 1000);
+          return () => clearInterval(interval);
+        }
+      }, [isLoading]);
+
+      const calculateScore = (countries) => {
+        return countries.reduce((score, country) => {
+          const m = medals[country];
+          return score + (m ? m.gold * 3 + m.silver * 2 + m.bronze : 0);
+        }, 0);
+      };
+
+      const sortedParticipants = [...participants].sort((a, b) => 
+        calculateScore(b.countries) - calculateScore(a.countries)
+      );
+
+      if (isLoading) {
+        return <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#020617,#172554,#312e81)',display:'flex',alignItems:'center',justifyContent:'center'}}><div style={{color:'#fff',fontSize:'2rem',fontWeight:'bold'}}>Loading...</div></div>;
+      }
+
+      return (
+        <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#020617,#172554,#312e81)',color:'#fff',padding:'2rem'}}>
+          <style>{`
+            @keyframes spin { to { transform: rotate(360deg); } }
+            .spin { animation: spin 1s linear infinite; }
+            @keyframes glow { 0%,100% { box-shadow: 0 0 20px rgba(59,130,246,0.5); } 50% { box-shadow: 0 0 40px rgba(59,130,246,0.8); } }
+            .glow { animation: glow 2s infinite; }
+          `}</style>
+          
+          <div style={{maxWidth:'80rem',margin:'0 auto 3rem',textAlign:'center'}}>
+            <div style={{display:'inline-flex',alignItems:'center',gap:'0.75rem',marginBottom:'1rem',padding:'0.5rem 1.5rem',background:'rgba(59,130,246,0.2)',borderRadius:'9999px',border:'1px solid rgba(59,130,246,0.3)'}}>
+              <span style={{fontSize:'1.25rem'}}>✨</span>
+              <span style={{fontSize:'0.875rem',fontWeight:'600',color:'#bfdbfe'}}>Milano Cortina 2026 - LIVE</span>
+            </div>
+            <h1 style={{fontFamily:'Bebas Neue,sans-serif',fontSize:'5rem',marginBottom:'1rem',background:'linear-gradient(to right,#60a5fa,#a78bfa,#f9a8d4)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>
+              WINTER OLYMPICS DRAFT
+            </h1>
+            <p style={{fontSize:'1.25rem',color:'#d1d5db'}}>Live Medal Tracking & Scoring</p>
+            {lastUpdate && <p style={{fontSize:'0.875rem',color:'#6b7280',marginTop:'0.5rem'}}>Last updated: {lastUpdate.toLocaleTimeString()}</p>}
+            {fetchError && <p style={{fontSize:'0.875rem',color:'#fbbf24',marginTop:'0.5rem'}}>⚠️ {fetchError}</p>}
+          </div>
+
+          <div style={{maxWidth:'80rem',margin:'0 auto 2rem',display:'flex',justifyContent:'center'}}>
+            <button onClick={fetchMedalData} disabled={isFetching} style={{padding:'0.75rem 1.5rem',background:'linear-gradient(to right,#059669,#0d9488)',borderRadius:'0.5rem',fontWeight:'600',border:'none',color:'#fff',cursor:isFetching?'not-allowed':'pointer',display:'flex',alignItems:'center',gap:'0.5rem'}}>
+              <span className={isFetching?'spin':''}>🔄</span>
+              {isFetching ? 'Updating...' : 'Refresh Data'}
+            </button>
+          </div>
+
+          <div style={{maxWidth:'80rem',margin:'0 auto'}}>
+            {sortedParticipants.map((participant, index) => {
+              const score = calculateScore(participant.countries);
+              const isLeader = index === 0 && score > 0;
+              
+              return (
+                <div key={participant.id} className={isLeader?'glow':''} style={{background:'linear-gradient(135deg,rgba(59,130,246,0.1),rgba(139,92,246,0.1))',border:'1px solid rgba(255,255,255,0.1)',borderRadius:'1rem',padding:'2rem',marginBottom:'1.5rem'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'1.5rem',flexWrap:'wrap',gap:'1rem'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'1rem'}}>
+                      <div style={{width:'3.5rem',height:'3.5rem',borderRadius:'9999px',background:isLeader?'linear-gradient(135deg,#fbbf24,#f97316)':'rgba(255,255,255,0.1)',color:isLeader?'#0f172a':'#9ca3af',fontWeight:'bold',fontSize:'1.5rem',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                        {isLeader ? '🏆' : index + 1}
+                      </div>
+                      <div>
+                        <h3 style={{fontFamily:'Bebas Neue,sans-serif',fontSize:'1.875rem',marginBottom:'0.25rem'}}>{participant.name}</h3>
+                        <p style={{color:'#9ca3af',fontSize:'0.875rem'}}>{participant.countries.length} countries</p>
+                      </div>
+                    </div>
+                    <div style={{textAlign:'right'}}>
+                      <div style={{fontFamily:'Bebas Neue,sans-serif',fontSize:'3rem',background:'linear-gradient(to right,#60a5fa,#a78bfa)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>
+                        {score}
+                      </div>
+                      <div style={{fontSize:'0.875rem',color:'#9ca3af',textTransform:'uppercase'}}>Points</div>
+                    </div>
+                  </div>
+
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(250px,1fr))',gap:'1rem'}}>
+                    {participant.countries.map(country => {
+                      const m = medals[country] || { gold: 0, silver: 0, bronze: 0 };
+                      const countryScore = m.gold * 3 + m.silver * 2 + m.bronze;
+                      
+                      return (
+                        <div key={country} style={{background:'rgba(255,255,255,0.05)',borderRadius:'0.75rem',padding:'1rem',border:'1px solid rgba(255,255,255,0.1)'}}>
+                          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'0.75rem'}}>
+                            <h4 style={{fontWeight:'600',fontSize:'1.125rem'}}>{country}</h4>
+                            <span style={{fontSize:'1.5rem',fontWeight:'bold',color:'#60a5fa'}}>{countryScore}</span>
+                          </div>
+                          <div style={{display:'flex',gap:'1rem',fontSize:'0.875rem'}}>
+                            <div style={{display:'flex',alignItems:'center',gap:'0.25rem'}}>
+                              <span style={{color:'#FFD700'}}>🥇</span>
+                              <span>{m.gold}</span>
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',gap:'0.25rem'}}>
+                              <span style={{color:'#C0C0C0'}}>🥈</span>
+                              <span>{m.silver}</span>
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',gap:'0.25rem'}}>
+                              <span style={{color:'#CD7F32'}}>🥉</span>
+                              <span>{m.bronze}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{maxWidth:'80rem',margin:'3rem auto 0',textAlign:'center',color:'#6b7280',fontSize:'0.875rem'}}>
+            <p>Points: Gold = 3 pts | Silver = 2 pts | Bronze = 1 pt</p>
+            <p style={{marginTop:'0.5rem'}}>📡 Live data from Wikipedia • Auto-refreshes every 5 minutes</p>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
